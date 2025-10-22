@@ -3,6 +3,7 @@
 //  Image2PNG
 //
 //  Created by Shin'ichiro SUZUKI on 2015/12/09.
+//  Modified for Video Frame support by G-L-I-T-C-H-O-R-S-E on 2025/10/22
 //  Copyright © 2015 szk-engineering. All rights reserved.
 //
 
@@ -10,13 +11,15 @@
 #import <OpenGL/CGLMacro.h>
 
 #import "Image2PNGPlugIn.h"
+#import <ImageIO/ImageIO.h>
+#import <CoreServices/CoreServices.h>
 
 #define	kQCPlugIn_Name				@"Image2PNG"
-#define	kQCPlugIn_Description		@"Export Image as Portable Network Graphics(PNG)"
+#define	kQCPlugIn_Description		@"Export a single frame (image/movie) to PNG when Enable is pulsed"
 
 @implementation Image2PNGPlugIn
 
-@dynamic inputImage, inputPath;
+@dynamic inputImage, inputPath, inputEnable;
 
 + (NSDictionary *)attributes
 {
@@ -27,10 +30,13 @@
 + (NSDictionary *)attributesForPropertyPortWithKey:(NSString *)key
 {
   if ([key isEqualToString:@"inputImage"]) {
-    return [NSDictionary dictionaryWithObjectsAndKeys:@"Image", QCPortAttributeNameKey, nil];
+    return [NSDictionary dictionaryWithObjectsAndKeys:@"Image / Video Frame", QCPortAttributeNameKey, nil];
   }
   if ([key isEqualToString:@"inputPath"]) {
-    return [NSDictionary dictionaryWithObjectsAndKeys:@"Destination Path", QCPortAttributeNameKey, @"~/Desktop", QCPortAttributeDefaultValueKey, nil];
+    return [NSDictionary dictionaryWithObjectsAndKeys:@"Destination Folder", QCPortAttributeNameKey, @"~/Desktop", QCPortAttributeDefaultValueKey, nil];
+  }
+  if ([key isEqualToString:@"inputEnable"]) {
+    return [NSDictionary dictionaryWithObjectsAndKeys:@"Enable (pulse true to save one frame)", QCPortAttributeNameKey, @(NO), QCPortAttributeDefaultValueKey, nil];
   }
   return nil;
 }
@@ -44,7 +50,7 @@
 + (QCPlugInTimeMode)timeMode
 {
   // Return the time dependency mode of the plug-in: kQCPlugInTimeModeNone, kQCPlugInTimeModeIdle or kQCPlugInTimeModeTimeBase.
-  return kQCPlugInTimeModeNone;
+  return kQCPlugInTimeModeIdle;
 }
 
 - (instancetype)init
@@ -65,6 +71,8 @@
   // Called by Quartz Composer when rendering of the composition starts: perform any required setup for the plug-in.
   // Return NO in case of fatal failure (this will prevent rendering of the composition to start).
   _index = 0;
+  _armed = NO;
+  _prevEnable = NO;
   return YES;
 }
 
@@ -83,61 +91,81 @@
    The OpenGL context for rendering can be accessed and defined for CGL macros using:
    CGLContextObj cgl_ctx = [context CGLContextObj];
    */
-  id<QCPlugInInputImageSource> qcImage = self.inputImage;
-  NSString* pixelFormat;
-  CGColorSpaceRef colorSpace;
-  CGDataProviderRef dataProvider;
-  CGImageRef cgImage;
-  CGImageDestinationRef imageDestination;
-  NSURL* fileURL;
-  BOOL success;
-  
-  if (![self didValueForInputKeyChange:@"inputImage"] || !qcImage || ![self.inputPath length]) {
+  BOOL enableNow = self.inputEnable ? YES : NO;
+  if (enableNow && !_prevEnable) {
+    _armed = YES;
+  } else if (!enableNow && _prevEnable) {
+  }
+  _prevEnable = enableNow;
+
+  if (!_armed) {
     return YES;
   }
-  
-  colorSpace = [qcImage imageColorSpace];
-  if(CGColorSpaceGetModel(colorSpace) == kCGColorSpaceModelMonochrome) {
+
+  id<QCPlugInInputImageSource> qcImage = self.inputImage;
+  if (!qcImage) {
+    return YES;
+  }
+  if (![self.inputPath length]) {
+    return YES;
+  }
+
+  NSString* pixelFormat;
+  CGColorSpaceRef colorSpace = [qcImage imageColorSpace];
+  CGColorSpaceModel model = CGColorSpaceGetModel(colorSpace);
+  if (model == kCGColorSpaceModelMonochrome) {
     pixelFormat = QCPlugInPixelFormatI8;
   }
-  else if(CGColorSpaceGetModel(colorSpace) == kCGColorSpaceModelRGB) {
+  else if (model == kCGColorSpaceModelRGB) {
 #if __BIG_ENDIAN__
     pixelFormat = QCPlugInPixelFormatARGB8;
 #else
     pixelFormat = QCPlugInPixelFormatBGRA8;
 #endif
   } else {
-    return NO;
+    return YES;
   }
   
   if (![qcImage lockBufferRepresentationWithPixelFormat:pixelFormat colorSpace:colorSpace forBounds:[qcImage imageBounds]]) {
-    return NO;
+    return YES;
   }
-  
-  dataProvider = CGDataProviderCreateWithData(NULL, [qcImage bufferBaseAddress], [qcImage bufferPixelsHigh] * [qcImage bufferBytesPerRow], NULL);
-  cgImage = CGImageCreate([qcImage bufferPixelsWide], [qcImage bufferPixelsHigh], 8, (pixelFormat == QCPlugInPixelFormatI8 ? 8 : 32), [qcImage bufferBytesPerRow], colorSpace, (pixelFormat == QCPlugInPixelFormatI8 ? 0 : kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Host), dataProvider, NULL, false, kCGRenderingIntentDefault);
+
+  CGDataProviderRef dataProvider =
+    CGDataProviderCreateWithData(NULL, [qcImage bufferBaseAddress], [qcImage bufferPixelsHigh] * [qcImage bufferBytesPerRow], NULL);
+
+  CGImageRef cgImage =
+    CGImageCreate([qcImage bufferPixelsWide], [qcImage bufferPixelsHigh],
+                  8, (pixelFormat == QCPlugInPixelFormatI8 ? 8 : 32),
+                  [qcImage bufferBytesPerRow], colorSpace,
+                  (pixelFormat == QCPlugInPixelFormatI8 ? 0 : kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Host),
+                  dataProvider, NULL, false, kCGRenderingIntentDefault);
+
   CGDataProviderRelease(dataProvider);
+  [qcImage unlockBufferRepresentation];
+
   if(cgImage == NULL) {
-    [qcImage unlockBufferRepresentation];
-    return NO;
+    return YES;
   }
+
   NSDateFormatter* formatter = [[NSDateFormatter alloc] init];
   [formatter setDateFormat:@"yyyyMMdd-HHmmss"];
-  fileURL = [NSURL fileURLWithPath:[[self.inputPath stringByStandardizingPath] stringByAppendingPathComponent:[NSString stringWithFormat:@"%@_%05lu.png", [formatter stringFromDate:[NSDate date]], ++_index]]];
-  imageDestination = (fileURL ? CGImageDestinationCreateWithURL((CFURLRef)fileURL, kUTTypePNG, 1, NULL) : NULL);
+  NSURL* fileURL = [NSURL fileURLWithPath:[[self.inputPath stringByStandardizingPath] stringByAppendingPathComponent:[NSString stringWithFormat:@"%@_%05lu.png", [formatter stringFromDate:[NSDate date]], ++_index]]];
+  CGImageDestinationRef imageDestination = (fileURL ? CGImageDestinationCreateWithURL((CFURLRef)fileURL, kUTTypePNG, 1, NULL) : NULL);
   if(imageDestination == NULL) {
     CGImageRelease(cgImage);
-    [qcImage unlockBufferRepresentation];
-    return NO;
+    return YES;
   }
+
   CGImageDestinationAddImage(imageDestination, cgImage, NULL);
-  success = CGImageDestinationFinalize(imageDestination);
+  BOOL success = CGImageDestinationFinalize(imageDestination);
   CFRelease(imageDestination);
-  
   CGImageRelease(cgImage);
-  [qcImage unlockBufferRepresentation];
-  
-  return success;
+
+  if (success) {
+    _armed = NO;
+  }
+
+  return YES;
 }
 
 - (void)disableExecution:(id <QCPlugInContext>)context
