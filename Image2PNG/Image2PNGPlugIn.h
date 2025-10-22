@@ -11,8 +11,11 @@
 @interface Image2PNGPlugIn : QCPlugIn
 {
   unsigned long _index;
+  BOOL _armed;
+  BOOL _prevEnable;
 }
 @property(assign) id<QCPlugInInputImageSource> inputImage;
-@property(assign) NSString* inputPath;
+@property(assign) NSString *inputPath;
+@property(assign) BOOL inputEnable;
 
 @end
