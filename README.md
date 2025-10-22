@@ -1,7 +1,7 @@
 Image2PNG
 ====
 
-Quartz Composer Plugin which exports Image as PNG.
+Quartz Composer Plugin which exports Image and Video frames as PNG.
 
 ## Description
 Quartz Composer doesn't have standard plugin which exports some Image to local storage.
